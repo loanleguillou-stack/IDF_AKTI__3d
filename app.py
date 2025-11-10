@@ -1,10 +1,12 @@
 # ============================================
 # APP STREAMLIT — CARTE IDF BÂTIMENTS 2.5D
+# COMPATIBLE STREAMLIT CLOUD (sans GeoPandas)
 # ============================================
 
 import streamlit as st
 import pydeck as pdk
-import geopandas as gpd
+import json
+import numpy as np
 
 
 # ============================================
@@ -17,7 +19,7 @@ params = st.experimental_get_query_params()
 token = params.get("token", [""])[0]
 
 if token != SECRET_TOKEN:
-    st.warning("Accès restreint. Ajoute ?token=IDF_MAP_2025_SUPERSECRET à l’URL.")
+    st.warning("Accès restreint. Ajoute ?token=IDF_MAP_2025_SUPERSECRET dans l’URL.")
     st.stop()
 
 
@@ -30,138 +32,47 @@ st.title("🏢 Carte 2.5D – Bâtiments d’activités en Île-de-France")
 
 
 # ============================================
-# 📥 CHARGEMENT DES DONNÉES
+# 📥 CHARGEMENT DONNÉES GEOJSON (sans geopandas)
 # ============================================
 
 @st.cache_data
-def load_data():
-    gdf = gpd.read_file("bdnb_IDF_FINAL_CLEAN_WITH_LATLON.gpkg")
-    gdf = gdf.to_crs(4326)
+def load_geojson(path):
+    with open(path, "r", encoding="utf-8") as f:
+        return json.load(f)
 
-    # Nouvelle colonne arrondie
-    gdf["surface_arrondie"] = gdf["surface_sol_m2"].round().astype(int)
 
-    return gdf
-
-gdf = load_data()
+batiments = load_geojson("bdnb_IDF_FINAL_CLEAN_WITH_LATLON.geojson")
+routes = load_geojson("rrir_national_iledefrance_wgs84 (1).geojson")
 
 
 # ============================================
-# 🔍 SIDEBAR — FILTRES
+# 🧭 CALCUL DU CENTRE DE LA VUE
 # ============================================
 
-st.sidebar.header("🔍 Filtres")
+coords = []
 
-# DEP
-departements = sorted(gdf["departement"].dropna().unique())
-departement_choice = st.sidebar.multiselect(
-    "Départements", options=departements, default=departements
-)
+for feat in batiments["features"]:
+    geom = feat["geometry"]
+    if geom["type"] == "Polygon":
+        coords.extend(geom["coordinates"][0])
+    elif geom["type"] == "MultiPolygon":
+        for polygon in geom["coordinates"]:
+            coords.extend(polygon[0])
 
-# ANNÉE
-annees_valides = gdf["annee_construction"].dropna()
-if not annees_valides.empty:
-    annee_min = int(annees_valides.min())
-    annee_max = int(annees_valides.max())
-else:
-    annee_min, annee_max = 1900, 2025
+coord_arr = np.array(coords)
+lon_mean, lat_mean = np.mean(coord_arr[:, 0]), np.mean(coord_arr[:, 1])
 
-annee_range = st.sidebar.slider(
-    "Année de construction",
-    min_value=annee_min,
-    max_value=annee_max,
-    value=(annee_min, annee_max),
-)
-
-# SURFACE
-surface_range = st.sidebar.slider(
-    "Surface au sol (m²)",
-    min_value=float(gdf.surface_sol_m2.min()),
-    max_value=float(gdf.surface_sol_m2.max()),
-    value=(float(gdf.surface_sol_m2.min()), float(gdf.surface_sol_m2.max())),
-)
-
-# HAUTEUR
-hauteur_range = st.sidebar.slider(
-    "Hauteur (m)",
-    min_value=float(gdf.hauteur_m.min()),
-    max_value=float(gdf.hauteur_m.max()),
-    value=(float(gdf.hauteur_m.min()), float(gdf.hauteur_m.max())),
-)
-
-# PROPRIÉTAIRE
-proprio_list = sorted(gdf["proprietaire_denomination"].dropna().unique())
-proprio_choice = st.sidebar.multiselect(
-    "Propriétaire", options=proprio_list, default=proprio_list
-)
-
-
-# ============================================
-# 🧮 APPLICATION DES FILTRES
-# ============================================
-
-
-gdf_filtered = gdf.copy()
-
-# Filtre département
-gdf_filtered = gdf_filtered[gdf_filtered["departement"].isin(departement_choice)]
-
-# Filtre année si disponible
-gdf_filtered = gdf_filtered[
-    gdf_filtered["annee_construction"].isna() |
-    gdf_filtered["annee_construction"].between(annee_range[0], annee_range[1], inclusive="both")
-]
-
-# Filtre surface
-gdf_filtered = gdf_filtered[
-    gdf_filtered["surface_sol_m2"].isna() |
-    gdf_filtered["surface_sol_m2"].between(surface_range[0], surface_range[1], inclusive="both")
-]
-
-# Filtre hauteur
-gdf_filtered = gdf_filtered[
-    gdf_filtered["hauteur_m"].isna() |
-    gdf_filtered["hauteur_m"].between(hauteur_range[0], hauteur_range[1], inclusive="both")
-]
-
-# Filtre propriétaire
-gdf_filtered = gdf_filtered[
-    gdf_filtered["proprietaire_denomination"].isna() |
-    gdf_filtered["proprietaire_denomination"].isin(proprio_choice)
-]
-
-
-
-# ============================================
-# 🧭 VUE INITIALE
-# ============================================
 
 view = pdk.ViewState(
-    longitude=gdf["lon"].mean(),
-    latitude=gdf["lat"].mean(),
+    longitude=lon_mean,
+    latitude=lat_mean,
     zoom=10,
     pitch=50,
 )
 
 
 # ============================================
-# 🏷️ TOOLTIP (corrigé)
-# ============================================
-
-tooltip = {
-    "html": """
-    <b>Surface au sol :</b> {surface_arrondie} m²<br>
-    <b>Hauteur :</b> {hauteur_m} m<br>
-    <b>Année de construction :</b> {annee_construction}<br>
-    <b>Propriétaire :</b> {proprietaire_denomination}<br>
-    <b>Adresse :</b> {libelle_adresse}
-    """,
-    "style": {"backgroundColor": "black", "color": "white"}
-}
-
-
-# ============================================
-# 🗺️ FOND DE CARTE
+# 🗺️ CHOIX FOND DE CARTE (SIDEBAR)
 # ============================================
 
 st.sidebar.subheader("🗺️ Fond de carte")
@@ -173,45 +84,96 @@ basemap_choice = st.sidebar.selectbox(
 
 if basemap_choice == "Clair (Positron)":
     basemap = "https://basemaps.cartocdn.com/gl/positron-gl-style/style.json"
+    routes_color = "[0, 0, 0]"
 else:
     basemap = "https://basemaps.cartocdn.com/gl/dark-matter-gl-style/style.json"
+    routes_color = "[255, 255, 255]"
 
 
 # ============================================
-# 🚗 ROUTES — GEOJSON (couleurs dynamiques)
+# 🏢 FILTRES (année construction / surface)
 # ============================================
 
-roads_path = r"C:\Users\loanl\OneDrive\Bureau\Cartographie bâtiment d'activités IDF\output\rrir_national_iledefrance_wgs84 (1).geojson"
-roads = gpd.read_file(roads_path).to_crs(4326)
+st.sidebar.subheader("🎚️ Filtres")
 
-# Couleur dynamique selon le fond
-route_color = "[0, 0, 0]" if basemap_choice == "Clair (Positron)" else "[255, 255, 255]"
+min_year = 1900
+max_year = 2030
 
-roads_layer = pdk.Layer(
+year_range = st.sidebar.slider(
+    "Année de construction",
+    min_year,
+    max_year,
+    (min_year, max_year)
+)
+
+surface_min = st.sidebar.number_input("Surface minimum (m²)", 0, 1000000, 0)
+
+# Filtrage des features
+filtered_features = []
+for f in batiments["features"]:
+
+    props = f["properties"]
+
+    year = props.get("annee_construction")
+    surf = props.get("surface_sol_m2", 0)
+
+    if year is None:
+        continue
+
+    if year_range[0] <= year <= year_range[1] and surf >= surface_min:
+        filtered_features.append(f)
+
+batiments_filtered = {
+    "type": "FeatureCollection",
+    "features": filtered_features
+}
+
+
+# ============================================
+# 🏷️ TOOLTIP
+# ============================================
+
+tooltip = {
+    "html": """
+    <b>Surface au sol :</b> {surface_sol_m2} m²<br>
+    <b>Hauteur :</b> {hauteur_m} m<br>
+    <b>Année de construction :</b> {annee_construction}<br>
+    <b>Propriétaire :</b> {proprietaire_denomination}<br>
+    <b>Adresse :</b> {libelle_adresse}
+    """,
+    "style": {"backgroundColor": "black", "color": "white"}
+}
+
+
+# ============================================
+# 🚗 LAYER ROUTES
+# ============================================
+
+routes_layer = pdk.Layer(
     "GeoJsonLayer",
-    roads.__geo_interface__,
+    routes,
     stroked=True,
     filled=False,
-    get_line_color=route_color,
-    get_line_width=40,
+    get_line_color=routes_color,
+    get_line_width=30,
     opacity=1.0,
     pickable=False,
 )
 
 
 # ============================================
-# 🏢 BÂTIMENTS (vert foncé BNP + filtres)
+# 🏢 LAYER BÂTIMENTS 2.5D
 # ============================================
 
 batiments_layer = pdk.Layer(
     "GeoJsonLayer",
-    gdf_filtered.__geo_interface__,
-    opacity=0.85,
+    batiments_filtered,
+    opacity=0.9,
     stroked=False,
     filled=True,
     extruded=True,
-    get_elevation="properties.hauteur_m",
-    get_fill_color="[0, 95, 60, 220]",  # 🌿 Vert BNP
+    get_elevation="properties.hauteur_m * 1.5",
+    get_fill_color="[1, 89, 38, 200]",   # vert foncé BNP 💚
     pickable=True,
 )
 
@@ -221,7 +183,7 @@ batiments_layer = pdk.Layer(
 # ============================================
 
 deck = pdk.Deck(
-    layers=[roads_layer, batiments_layer],
+    layers=[routes_layer, batiments_layer],
     initial_view_state=view,
     tooltip=tooltip,
     map_style=basemap,
@@ -229,5 +191,4 @@ deck = pdk.Deck(
 
 st.pydeck_chart(deck)
 
-st.success("Carte interactive chargée avec succès 🚀")
-
+st.success("🚀 Carte interactive chargée avec succès !")
