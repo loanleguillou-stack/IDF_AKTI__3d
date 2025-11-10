@@ -94,17 +94,26 @@ else:
 # 🏢 FILTRES (année construction / surface)
 # ============================================
 
-st.sidebar.subheader("🎚️ Filtres")
+filtered_features = []
+for f in batiments["features"]:
 
-min_year = 1900
-max_year = 2030
+    props = f["properties"]
 
-year_range = st.sidebar.slider(
-    "Année de construction",
-    min_year,
-    max_year,
-    (min_year, max_year)
-)
+    year = props.get("annee_construction")
+    surf = props.get("surface_sol_m2", 0)
+
+    # 1️⃣ Filtre surface (obligatoire)
+    if surf < surface_min:
+        continue
+
+    # 2️⃣ Filtre année uniquement si elle existe
+    if year is not None:
+        if not (year_range[0] <= year <= year_range[1]):
+            continue
+
+    # 3️⃣ Sinon on garde le bâtiment
+    filtered_features.append(f)
+
 
 surface_min = st.sidebar.number_input("Surface minimum (m²)", 0, 1000000, 0)
 
