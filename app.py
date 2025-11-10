@@ -115,6 +115,7 @@ for f in batiments["features"]:
     filtered_features.append(f)
 
 
+
 surface_min = st.sidebar.number_input("Surface minimum (m²)", 0, 1000000, 0)
 
 # Filtrage des features
